@@ -102,23 +102,39 @@ bitflags! {
 pub struct SpellTargets {
     pub target_mask: TargetFlags,
 
-    #[br(if(
-        target_mask.contains(TargetFlags::UNIT)
-            || target_mask.contains(TargetFlags::UNIT_RAID)
-            || target_mask.contains(TargetFlags::UNIT_PARTY)
-            || target_mask.contains(TargetFlags::UNIT_ENEMY)
-            || target_mask.contains(TargetFlags::UNIT_ALLY)
-            || target_mask.contains(TargetFlags::CORPSE_ENEMY)
-            || target_mask.contains(TargetFlags::CORPSE_ALLY)
-            || target_mask.contains(TargetFlags::UNIT_MINIPET)
-            || target_mask.contains(TargetFlags::UNIT_DEAD)
-    ))]
+    // CMaNGOS SpellCastTargets::write() emits at most one object target in this
+    // section, with UNIT taking precedence over GAMEOBJECT, then CORPSE, then
+    // the UNIT_MINIPET fallback. Semantic flags such as UNIT_ENEMY/ALLY do not
+    // themselves add another packed GUID to the wire stream.
+    #[br(if(target_mask.contains(TargetFlags::UNIT)))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit_target: Option<PackedGuid>,
 
-    #[br(if(target_mask.contains(TargetFlags::GAMEOBJECT)))]
+    #[br(if(
+        !target_mask.contains(TargetFlags::UNIT)
+            && target_mask.contains(TargetFlags::GAMEOBJECT)
+    ))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gameobject_target: Option<PackedGuid>,
+
+    #[br(if(
+        !target_mask.contains(TargetFlags::UNIT)
+            && !target_mask.contains(TargetFlags::GAMEOBJECT)
+            && (target_mask.contains(TargetFlags::CORPSE_ENEMY)
+                || target_mask.contains(TargetFlags::CORPSE_ALLY))
+    ))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corpse_target: Option<PackedGuid>,
+
+    #[br(if(
+        !target_mask.contains(TargetFlags::UNIT)
+            && !target_mask.contains(TargetFlags::GAMEOBJECT)
+            && !target_mask.contains(TargetFlags::CORPSE_ENEMY)
+            && !target_mask.contains(TargetFlags::CORPSE_ALLY)
+            && target_mask.contains(TargetFlags::UNIT_MINIPET)
+    ))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minipet_target: Option<PackedGuid>,
 
     #[br(if(
         target_mask.contains(TargetFlags::ITEM)
@@ -127,17 +143,27 @@ pub struct SpellTargets {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_target: Option<PackedGuid>,
 
+    // WotLK location targets are not bare vec3 values. Each location is
+    // preceded by a packed transport GUID (usually a single zero byte).
+    #[br(if(target_mask.contains(TargetFlags::SOURCE_LOCATION)))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_transport: Option<PackedGuid>,
+
     #[br(if(target_mask.contains(TargetFlags::SOURCE_LOCATION)))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_pos: Option<Point3D>,
 
     #[br(if(target_mask.contains(TargetFlags::DEST_LOCATION)))]
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub dest_transport: Option<PackedGuid>,
+
+    #[br(if(target_mask.contains(TargetFlags::DEST_LOCATION)))]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dest_pos: Option<Point3D>,
 
-    #[br(if(target_mask.contains(TargetFlags::GLYPH)))]
+    #[br(if(target_mask.contains(TargetFlags::STRING)))]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub glyph_data: Option<u32>,
+    pub string_target: Option<NullTerminated<String>>,
 
     #[br(calc = target_mask.contains(TargetFlags::DEST_LOCATION))]
     pub has_dest_location: bool,
@@ -151,7 +177,9 @@ pub struct PredictedRunes {
     pub rune_mask_before: u8,
     pub rune_mask_after: u8,
 
-    #[br(parse_with = binrw::helpers::until_eof)]
+    // CMaNGOS writes one cooldown byte only for each rune that was ready before
+    // the cast and is on cooldown afterwards. WotLK has six runes total.
+    #[br(count = ((rune_mask_before & !rune_mask_after) & 0x3F).count_ones() as usize)]
     pub cooldowns: Vec<u8>,
 }
 
@@ -169,8 +197,9 @@ pub struct VisualChain {
 
 #[derive(BinRead, Debug, Clone, FieldsMetadata, Serialize, Default)]
 pub struct AmmoInfo {
-    #[br(parse_with = binrw::helpers::until_eof)]
-    pub raw: Vec<u8>,
+    // Spell::WriteAmmoToPacket() is exactly two uint32 values in WotLK.
+    pub display_id: u32,
+    pub inventory_type: u32,
 }
 
 #[derive(BinRead, Debug, Clone, FieldsMetadata, Serialize, Default)]
