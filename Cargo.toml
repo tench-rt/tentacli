@@ -1,6 +1,6 @@
 [package]
 name = "tentacli"
-version = "15.3.1"
+version = "15.3.2"
 edition = "2024"
 authors = ["Sergio Ivanuzzo <sergio.ivanuzzo@gmail.com>"]
 description = "Framework for building extensible network protocol clients via modular plugins."
