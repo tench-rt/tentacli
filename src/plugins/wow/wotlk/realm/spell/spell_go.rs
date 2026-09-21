@@ -103,3 +103,90 @@ pub struct MissEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reflect_result: Option<u8>,
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_f32(bytes: &mut Vec<u8>, value: f32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn base_spell_go(cast_flags: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.push(0); // packed source guid = 0
+        bytes.push(0); // packed caster guid = 0
+        bytes.push(0); // cast count
+        push_u32(&mut bytes, 1234); // spell id
+        push_u32(&mut bytes, cast_flags);
+        push_u32(&mut bytes, 5678); // timestamp
+        bytes.push(0); // hit count
+        bytes.push(0); // miss count
+        bytes
+    }
+
+    fn push_destination(bytes: &mut Vec<u8>) {
+        push_u32(bytes, 0x0000_0040); // TARGET_FLAG_DEST_LOCATION
+        bytes.push(0); // packed destination transport guid = 0
+        push_f32(bytes, 1.0);
+        push_f32(bytes, 2.0);
+        push_f32(bytes, 3.0);
+    }
+
+    #[test]
+    fn cmangos_destination_spell_go_keeps_dest_counter_aligned() {
+        // Real CMaNGOS layout: target mask, packed transport guid, xyz, counter.
+        let mut bytes = base_spell_go(0);
+        push_destination(&mut bytes);
+        bytes.push(7); // dest loc counter
+
+        let mut cursor = Cursor::new(bytes.as_slice());
+        let incoming = Incoming::read_le(&mut cursor).unwrap();
+
+        assert!(incoming.targets.has_dest_location);
+        assert_eq!(incoming.targets.dest_transport, Some(PackedGuid(0)));
+        assert_eq!(incoming.dest_loc_counter, Some(7));
+        assert_eq!(cursor.position() as usize, bytes.len());
+    }
+
+    #[test]
+    fn ammo_is_fixed_width_and_does_not_consume_dest_counter() {
+        let mut bytes = base_spell_go(CastFlags::AMMO.bits());
+        push_destination(&mut bytes);
+        push_u32(&mut bytes, 5996); // ammo display id
+        push_u32(&mut bytes, 24); // ammo inventory type
+        bytes.push(9); // dest loc counter
+
+        let mut cursor = Cursor::new(bytes.as_slice());
+        let incoming = Incoming::read_le(&mut cursor).unwrap();
+
+        let ammo = incoming.ammo.unwrap();
+        assert_eq!(ammo.display_id, 5996);
+        assert_eq!(ammo.inventory_type, 24);
+        assert_eq!(incoming.dest_loc_counter, Some(9));
+        assert_eq!(cursor.position() as usize, bytes.len());
+    }
+
+    #[test]
+    fn predicted_runes_reads_only_spent_rune_cooldowns() {
+        let mut bytes = base_spell_go(CastFlags::PREDICTED_RUNES.bits());
+        push_destination(&mut bytes);
+        bytes.push(0b0000_0011); // rune 0 + 1 ready before
+        bytes.push(0b0000_0010); // rune 0 spent
+        bytes.push(0x80); // exactly one cooldown byte
+        bytes.push(11); // dest loc counter must remain unread until now
+
+        let mut cursor = Cursor::new(bytes.as_slice());
+        let incoming = Incoming::read_le(&mut cursor).unwrap();
+
+        assert_eq!(incoming.runes.unwrap().cooldowns, vec![0x80]);
+        assert_eq!(incoming.dest_loc_counter, Some(11));
+        assert_eq!(cursor.position() as usize, bytes.len());
+    }
+}
